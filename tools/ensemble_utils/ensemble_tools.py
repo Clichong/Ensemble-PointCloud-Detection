@@ -153,7 +153,7 @@ class EnsembleCoder(object):
         """
         n = boxes.any(-1).sum()
 
-        boxes[:, 3:6] = torch.clamp_min(boxes[:, 3:6], min=1e-5)
+        # boxes[:, 3:6] = torch.clamp_min(boxes[:, 3:6], min=1e-5)
         boxes_encode = torch.zeros_like(boxes)
 
         self.coder_base = boxes[:n].mean(dim=0)

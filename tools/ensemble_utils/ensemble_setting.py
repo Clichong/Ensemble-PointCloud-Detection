@@ -16,6 +16,7 @@ ensemble_cfg = {
     ],
     'MAX_MERGE_NUMS': 10,
     'BOX_SIZE': 7,
+    'BOX_WEIGHT': [1,1,1,1,1,1,1],
 }
 
 
