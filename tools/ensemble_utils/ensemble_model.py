@@ -8,7 +8,7 @@ import torchvision
 
 from einops.layers.torch import Rearrange
 from collections import defaultdict
-
+from pathlib import Path
 
 from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file, merge_new_config
 from pcdet.datasets import build_dataloader
@@ -36,7 +36,8 @@ class Ensemble(nn.Module):
         self.cfg = ensemble_cfg
         self.max_merge_nums = self.cfg['MAX_MERGE_NUMS']  # hyperparameter
         self.mergenet = merge_model.AttentionMergeNet(max_c=self.max_merge_nums, depth=6)
-        self.use_merge_ckpt = False
+        # self.mergenet = merge_model.WeightMergeNet(max_c=self.max_merge_nums)
+        self.use_merge_ckpt = True
         self.mergenet.cuda()
 
         # load mutil model
@@ -77,12 +78,13 @@ class Ensemble(nn.Module):
 
             self.model_list.append(model)
 
-        self.eval()     # 集成的模型全部设置为验证模式
+        self.model_list.eval()     # 集成的模型全部设置为验证模式
 
         # 加载融合模型
-        use_merge_ckpt_ = os.path.isfile('ensemble_utils/mergenet.pth') and self.use_merge_ckpt
+        merge_ckpt_path = Path(os.getcwd()) / 'ensemble_utils' / 'merge_net.pth'
+        use_merge_ckpt_ = merge_ckpt_path.exists() and self.use_merge_ckpt
         if use_merge_ckpt_:
-            merge_ckpt = torch.load('ensemble_utils/mergenet.pth')
+            merge_ckpt = torch.load(merge_ckpt_path)
             self.mergenet.load_state_dict(merge_ckpt)
 
         print('********' * 10)
@@ -209,7 +211,7 @@ class Ensemble(nn.Module):
             ret_dict_list.append(ret_dict)
         ensemble_pred_dict = self.ensemble_pred_result(pred_dict_list, batch_size=batch_dict['batch_size'])
 
-        if self.ensemble_train:
+        if self.mergenet.training:
             merge_loss = self.get_loss(ensemble_pred_dict, batch_dict['gt_boxes'])   # 重新对整合的内容构造损失
             return merge_loss
         else:

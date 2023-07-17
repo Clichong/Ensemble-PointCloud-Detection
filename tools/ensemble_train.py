@@ -36,7 +36,7 @@ def parse_config():
     parser.add_argument('--cfg_list', type=str, default=None, help='specify the config for training')
     parser.add_argument('--ckpt_list', type=str, default=None, help='checkpoint to start from')
 
-    parser.add_argument('--batch_size', type=int, default=16, required=False, help='batch size for training')
+    parser.add_argument('--batch_size', type=int, default=4, required=False, help='batch size for training')
     parser.add_argument('--epochs', type=int, default=2, required=False, help='number of epochs to train for')
     parser.add_argument('--workers', type=int, default=0, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
@@ -377,7 +377,8 @@ def main():
     args.start_epoch = max(args.epochs - args.num_epochs_to_eval,
                            0)  # Only evaluate the last args.num_epochs_to_eval epochs
 
-    model.ensemble_train = False     # 验证模式
+    # model.ensemble_train = False     # 训练模式
+    model.mergenet.train()
     with torch.no_grad():
         from ensemble_test import eval_ckpt
         eval_ckpt(cfg, args, model, dataloader=test_loader, epoch_id='Ensemble', logger=logger,

@@ -443,9 +443,10 @@ def main():
     ckpt_list = args.ckpt_list if args.ckpt_list is not None else output_dir / 'ckpt'
     cfg_list = args.cfg_list
     model = Ensemble(cfg_list, ckpt_list, test_set, logger, dist_test)
-    model.ensemble_train = False    # 验证模式
-
     # model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
+
+    # model.ensemble_train = False  # 验证模式
+    model.mergenet.eval()
     with torch.no_grad():
         eval_ckpt(cfg, args, model, dataloader=test_loader, epoch_id='Ensemble', logger=logger,
                   dist_test=dist_test, result_dir=eval_output_dir)
