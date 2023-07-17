@@ -226,6 +226,13 @@ def train_ensemble(model, optimizer, train_loader, model_func, lr_scheduler, opt
                 use_amp=use_amp
             )
 
+            # After training, Save the model
+            ckpt_name = 'merge_net.pth'
+            ckpt_save_path = ckpt_save_dir / ckpt_name
+            torch.save(model.mergenet.state_dict(), ckpt_save_path)
+            print('********* save model at epoch{} **********'.format(cur_epoch))
+
+
 def main():
     args, cfg = parse_config()
     if args.launcher == 'none':
