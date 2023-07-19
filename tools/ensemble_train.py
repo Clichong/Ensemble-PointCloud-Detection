@@ -230,7 +230,7 @@ def train_ensemble(model, optimizer, train_loader, model_func, lr_scheduler, opt
             ckpt_name = 'merge_net.pth'
             ckpt_save_path = ckpt_save_dir / ckpt_name
             torch.save(model.mergenet.state_dict(), ckpt_save_path)
-            print('********* save model at epoch{} **********'.format(cur_epoch))
+            logger.info('\n ********* save model at epoch{} in {}********** \n'.format(cur_epoch, ckpt_save_path))
 
 
 def main():

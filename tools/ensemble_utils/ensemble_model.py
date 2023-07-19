@@ -35,9 +35,9 @@ class Ensemble(nn.Module):
         self.box_size = 7
         self.cfg = ensemble_cfg
         self.max_merge_nums = self.cfg['MAX_MERGE_NUMS']  # hyperparameter
-        self.mergenet = merge_model.AttentionMergeNet(max_c=self.max_merge_nums, depth=6)
+        self.mergenet = merge_model.AttentionMergeNet(max_c=self.max_merge_nums, depth=3)
         # self.mergenet = merge_model.WeightMergeNet(max_c=self.max_merge_nums)
-        self.use_merge_ckpt = True
+        self.use_merge_ckpt = False
         self.mergenet.cuda()
 
         # load mutil model
