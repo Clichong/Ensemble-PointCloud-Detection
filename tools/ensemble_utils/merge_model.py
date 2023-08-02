@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from functools import partial
 from typing import Callable, List, Optional, Sequence, Tuple, Union
 from timm.models.layers import Mlp, DropPath
-from tools.ensemble_utils.timm_model.module import Block, ResPostBlock, SwimBlock
+from tools.ensemble_utils.timm_model.module import Block, SwimBlock
 
 class MergeMLP(nn.Module):
     def __init__(self, max_c, hidden_c=16):

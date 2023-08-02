@@ -239,6 +239,7 @@ def parse_config():
     parser.add_argument('--batch_size', type=int, default=None, required=False, help='batch size for training')
     parser.add_argument('--workers', type=int, default=4, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
+    parser.add_argument('--ckpt_name', type=str, default=None, help='ensemble ckpt load for experiment')
 
     parser.add_argument('--pretrained_model', type=str, default=None, help='pretrained_model')
     parser.add_argument('--launcher', choices=['none', 'pytorch', 'slurm'], default='none')
@@ -444,6 +445,18 @@ def main():
     cfg_list = args.cfg_list
     model = Ensemble(cfg_list, ckpt_list, test_set, logger, dist_test)
     # model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
+
+    # load model
+    ckpt_name = args.ckpt_name
+    merge_ckpt_path = Path(os.getcwd()).parent / 'output/ensemble_model/default/ckpt' / ckpt_name \
+        if ckpt_name is not None else None
+    use_merge_ckpt_ = ckpt_name is not None and merge_ckpt_path.exists()
+    if use_merge_ckpt_:
+        merge_ckpt = torch.load(merge_ckpt_path)
+        model.mergenet.load_state_dict(merge_ckpt)
+    print('********' * 10)
+    print('load merge net success') if use_merge_ckpt_ else print('not use merge net ckpt')
+    print('********' * 10)
 
     # model.ensemble_train = False  # 验证模式
     model.mergenet.eval()

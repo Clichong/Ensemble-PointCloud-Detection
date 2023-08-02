@@ -40,6 +40,8 @@ def parse_config():
     parser.add_argument('--epochs', type=int, default=2, required=False, help='number of epochs to train for')
     parser.add_argument('--workers', type=int, default=0, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
+    parser.add_argument('--ckpt_name', type=str, default=None, help='ensemble ckpt load for experiment')
+    parser.add_argument('--save_name', type=str, default=None, help='ensemble ckpt save for experiment')
 
     parser.add_argument('--pretrained_model', type=str, default=None, help='pretrained_model')
     parser.add_argument('--launcher', choices=['none', 'pytorch', 'slurm'], default='none')
@@ -172,8 +174,8 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
 
             pbar.update()
             pbar.set_postfix(dict(total_it=accumulated_iter))
-            # tbar.set_postfix(disp_dict)
-            tbar.set_postfix_str(postfix_str)
+            tbar.set_postfix(disp_dict)
+            # tbar.set_postfix_str(postfix_str)
 
     if rank == 0:
         pbar.close()
@@ -182,7 +184,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
 
 
 def train_ensemble(model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
-                    start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
+                    start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, ckpt_save_name, train_sampler=None,
                     lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
                     merge_all_iters_to_one_epoch=False, use_amp=False,
                     use_logger_to_record=False, logger=None, logger_iter_interval=None,
@@ -226,9 +228,9 @@ def train_ensemble(model, optimizer, train_loader, model_func, lr_scheduler, opt
                 use_amp=use_amp
             )
 
-            # After training, Save the model
-            ckpt_name = 'merge_net.pth'
-            ckpt_save_path = ckpt_save_dir / ckpt_name
+            # After training, Save the model, default name is merge_net.pth
+            save_name = ckpt_save_name if ckpt_save_name is not None else 'merge_net.pth'
+            ckpt_save_path = ckpt_save_dir / save_name
             torch.save(model.mergenet.state_dict(), ckpt_save_path)
             logger.info('\n ********* save model at epoch{} in {}********** \n'.format(cur_epoch, ckpt_save_path))
 
@@ -301,19 +303,32 @@ def main():
     # model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=train_set)
     if args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model.ensemble_train = True     # 训练模式
+    # model.ensemble_train = True     # 训练模式
+    model.mergenet.train()
     model.cuda()
 
     # load checkpoint if it is possible
     start_epoch = it = 0
     last_epoch = -1
+    ckpt_name = args.ckpt_name
+    merge_ckpt_path = Path(os.getcwd()).parent / 'output/ensemble_model/default/ckpt' / ckpt_name \
+        if ckpt_name is not None else None
+    use_merge_ckpt_ = ckpt_name is not None and merge_ckpt_path.exists()
+    if use_merge_ckpt_:
+        merge_ckpt = torch.load(merge_ckpt_path)
+        model.mergenet.load_state_dict(merge_ckpt)
+    print('********' * 10)
+    print('load merge net success') if use_merge_ckpt_ else print('not use merge net ckpt')
+    # print(model.mergenet)
+    print('********' * 10)
+
     # if args.pretrained_model is not None:
     #     model.load_params_from_file(filename=args.pretrained_model, to_cpu=dist_train, logger=logger)
 
     # model.train()  # before wrap to DistributedDataParallel to support fixed some parameters
     if dist_train:
         model = nn.parallel.DistributedDataParallel(model, device_ids=[cfg.LOCAL_RANK % torch.cuda.device_count()])
-    logger.info(model)
+    logger.info(model.mergenet)
 
     # 构建优化器和学习调度器
     cfg.OPTIMIZATION.LR = 0.01
@@ -340,6 +355,7 @@ def main():
         rank=cfg.LOCAL_RANK,
         tb_log=tb_log,
         ckpt_save_dir=ckpt_dir,
+        ckpt_save_name=args.save_name,
         train_sampler=train_sampler,
         lr_warmup_scheduler=lr_warmup_scheduler,
         ckpt_save_interval=args.ckpt_save_interval,
@@ -378,7 +394,7 @@ def main():
                            0)  # Only evaluate the last args.num_epochs_to_eval epochs
 
     # model.ensemble_train = False     # 训练模式
-    model.mergenet.train()
+    model.mergenet.eval()       # 验证模式
     with torch.no_grad():
         from ensemble_test import eval_ckpt
         eval_ckpt(cfg, args, model, dataloader=test_loader, epoch_id='Ensemble', logger=logger,

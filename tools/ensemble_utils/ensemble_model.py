@@ -35,9 +35,10 @@ class Ensemble(nn.Module):
         self.box_size = 7
         self.cfg = ensemble_cfg
         self.max_merge_nums = self.cfg['MAX_MERGE_NUMS']  # hyperparameter
-        self.mergenet = merge_model.AttentionMergeNet(max_c=self.max_merge_nums, depth=3)
+        self.mergenet = merge_model.SwimMergeNet(max_c=self.max_merge_nums, depth=3, init_values=True, reg_token=True)
+        # self.mergenet = merge_model.AttentionMergeNet(max_c=self.max_merge_nums, depth=3)
         # self.mergenet = merge_model.WeightMergeNet(max_c=self.max_merge_nums)
-        self.use_merge_ckpt = False
+        # self.use_merge_ckpt = True
         self.mergenet.cuda()
 
         # load mutil model
@@ -81,16 +82,17 @@ class Ensemble(nn.Module):
         self.model_list.eval()     # 集成的模型全部设置为验证模式
 
         # 加载融合模型
-        merge_ckpt_path = Path(os.getcwd()) / 'ensemble_utils' / 'merge_net.pth'
-        use_merge_ckpt_ = merge_ckpt_path.exists() and self.use_merge_ckpt
-        if use_merge_ckpt_:
-            merge_ckpt = torch.load(merge_ckpt_path)
-            self.mergenet.load_state_dict(merge_ckpt)
-
-        print('********' * 10)
-        print("load {} model success".format(len(self.model_list)))
-        print('load merge net success') if use_merge_ckpt_ else None
-        print('********' * 10)
+        # ckpt_name = 'merge_net.pth'
+        # merge_ckpt_path = Path(os.getcwd()).parent / 'output/ensemble_model/default/ckpt' / ckpt_name
+        # use_merge_ckpt_ = merge_ckpt_path.exists() and self.use_merge_ckpt
+        # if use_merge_ckpt_:
+        #     merge_ckpt = torch.load(merge_ckpt_path)
+        #     self.mergenet.load_state_dict(merge_ckpt)
+        #
+        # print('********' * 10)
+        # print("load {} model success".format(len(self.model_list)))
+        # print('load merge net success') if use_merge_ckpt_ else None
+        # print('********' * 10)
 
     def load_model_cfg(self, cfg_path):
         import yaml
@@ -177,8 +179,15 @@ class Ensemble(nn.Module):
                     boxes = boxes[iou_mask == 0]
 
             info = torch.cat(res, dim=0)
-            # Avoid setting the box size to 0
-            info[:, 3:6] += 1e-5
+
+            # Avoid setting the box size < 0, boxed size in 345 and keep gradiant
+            min_boxes = info[:, 3:6].min(dim=0)[0] - 1e-1
+            min_boxes = min_boxes.repeat(info.shape[0], 1)
+            mask = info[:, 3:6] <= 0
+            info[:, 3:6][mask] -= min_boxes[mask]
+
+            # eval the result
+            assert (info[:, 3:6] > 0).all(), "boxes size must be > 0"
             new_pred_dicts.append(info)
 
         return new_pred_dicts

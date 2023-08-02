@@ -236,6 +236,7 @@ class SwimBlock(nn.Module):
         x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
 
+
 class ResPostBlock(nn.Module):
 
     def __init__(
