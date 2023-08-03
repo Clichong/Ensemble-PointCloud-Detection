@@ -432,17 +432,17 @@ if __name__ == '__main__':
         dataset_cfg = EasyDict(yaml.safe_load(open(args.cfg_file)))
         ROOT_DIR = (Path(__file__).resolve().parent / '../../../').resolve()    # /home/lab/LLC/PointCloud/OpenPCDet-5.2
         dataset_cfg.VERSION = args.version
-        create_nuscenes_info(
-            version=dataset_cfg.VERSION,                # 这里我选择的是mini版本
-            data_path=ROOT_DIR / 'data' / 'nuscenes',   # /home/lab/LLC/PointCloud/OpenPCDet-5.2/data/nuscenes
-            save_path=ROOT_DIR / 'data' / 'nuscenes',   # /home/lab/LLC/PointCloud/OpenPCDet-5.2/data/nuscenes
-            max_sweeps=dataset_cfg.MAX_SWEEPS,          # 10
-            with_cam=args.with_cam
-        )
-
-        # nuscenes_dataset = NuScenesDataset(
-        #     dataset_cfg=dataset_cfg, class_names=None,
-        #     root_path=ROOT_DIR / 'data' / 'nuscenes',
-        #     logger=common_utils.create_logger(), training=True
+        # create_nuscenes_info(
+        #     version=dataset_cfg.VERSION,                # 这里我选择的是mini版本
+        #     data_path=ROOT_DIR / 'data' / 'nuscenes',   # /home/lab/LLC/PointCloud/OpenPCDet-5.2/data/nuscenes
+        #     save_path=ROOT_DIR / 'data' / 'nuscenes',   # /home/lab/LLC/PointCloud/OpenPCDet-5.2/data/nuscenes
+        #     max_sweeps=dataset_cfg.MAX_SWEEPS,          # 10
+        #     with_cam=args.with_cam
         # )
-        # nuscenes_dataset.create_groundtruth_database(max_sweeps=dataset_cfg.MAX_SWEEPS)
+
+        nuscenes_dataset = NuScenesDataset(
+            dataset_cfg=dataset_cfg, class_names=None,
+            root_path=ROOT_DIR / 'data' / 'nuscenes',
+            logger=common_utils.create_logger(), training=True
+        )
+        nuscenes_dataset.create_groundtruth_database(max_sweeps=dataset_cfg.MAX_SWEEPS)

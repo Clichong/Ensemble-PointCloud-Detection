@@ -40,8 +40,10 @@ def parse_config():
     parser.add_argument('--epochs', type=int, default=2, required=False, help='number of epochs to train for')
     parser.add_argument('--workers', type=int, default=0, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
+    parser.add_argument('--model_choose', type=str, default='swim', help='[weight, attn, swim] to choose')
     parser.add_argument('--ckpt_name', type=str, default=None, help='ensemble ckpt load for experiment')
     parser.add_argument('--save_name', type=str, default=None, help='ensemble ckpt save for experiment')
+    parser.add_argument('--id', type=str, default='6', help='choose gpu id')
 
     parser.add_argument('--pretrained_model', type=str, default=None, help='pretrained_model')
     parser.add_argument('--launcher', choices=['none', 'pytorch', 'slurm'], default='none')
@@ -83,6 +85,7 @@ def parse_config():
     #     cfg_from_list(args.set_cfgs, cfg)
     np.random.seed(1024)
 
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.id
     return args, cfg
 
 
@@ -299,7 +302,8 @@ def main():
 
     # ensemble model
     ckpt_list, cfg_list = args.ckpt_list, args.cfg_list
-    model = Ensemble(cfg_list, ckpt_list, train_set, logger, dist_train)
+    model_choose = args.model_choose
+    model = Ensemble(cfg_list, ckpt_list, train_set, logger, dist_train, model_name=model_choose)
     # model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=train_set)
     if args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)

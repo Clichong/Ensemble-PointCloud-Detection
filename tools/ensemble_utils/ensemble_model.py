@@ -27,7 +27,7 @@ import torch.nn.functional as F
 
 
 class Ensemble(nn.Module):
-    def __init__(self, cfg_list, ckpt_list, dataset, logger, dist_test=False, loss='mse'):
+    def __init__(self, cfg_list, ckpt_list, dataset, logger, dist_test=False, loss='mse', model_name='swim'):
         super(Ensemble, self).__init__()
         self.ensemble_train = True
 
@@ -35,10 +35,15 @@ class Ensemble(nn.Module):
         self.box_size = 7
         self.cfg = ensemble_cfg
         self.max_merge_nums = self.cfg['MAX_MERGE_NUMS']  # hyperparameter
-        self.mergenet = merge_model.SwimMergeNet(max_c=self.max_merge_nums, depth=3, init_values=True, reg_token=True)
-        # self.mergenet = merge_model.AttentionMergeNet(max_c=self.max_merge_nums, depth=3)
-        # self.mergenet = merge_model.WeightMergeNet(max_c=self.max_merge_nums)
-        # self.use_merge_ckpt = True
+        print('max merge nums = {}'.format(self.max_merge_nums))
+
+        assert model_name in ['swim', 'attn', 'weig'], "No such {} model to choose.".format(model_name)
+        if model_name == 'swim':
+            self.mergenet = merge_model.SwimMergeNet(max_c=self.max_merge_nums, depth=3, init_values=True, reg_token=True)
+        elif model_name == 'attn':
+            self.mergenet = merge_model.AttentionMergeNet(max_c=self.max_merge_nums, depth=3)
+        elif model_name == 'weig':
+            self.mergenet = merge_model.WeightMergeNet(max_c=self.max_merge_nums)
         self.mergenet.cuda()
 
         # load mutil model
@@ -228,7 +233,7 @@ class Ensemble(nn.Module):
             return pred_dicts, ret_dict
 
 
-    def get_loss(self, ensemble_pred_dict, gt_dicts):
+    def get_loss(self, ensemble_pred_dict, gt_dicts, iou_thresh=0.1):
         """
         params:
             pred_infos: [boxes, scores, labels]
@@ -256,7 +261,7 @@ class Ensemble(nn.Module):
 
                 # get the match pred boxes and gt boxes, both shape is (k, 7)
                 iou = box_utils.boxes3d_nearest_bev_iou(pred_box, gt_box)  # (m, n)
-                iou_n = (iou > 0.1).any(-1)     # iou thresh
+                iou_n = (iou > iou_thresh).any(-1)     # iou thresh
                 pred_match_box = pred_box[iou_n]
                 max_iou_index = iou.argmax(-1)
                 gt_match_box = gt_box[max_iou_index][iou_n]
