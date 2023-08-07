@@ -171,7 +171,7 @@ class Ensemble(nn.Module):
                         merge_box = self.mergenet(encode_boxes)  # (1, d)
                         output_boxes = self.boxcoder.decode_torch(merge_box)
                     else:
-                        merge_box = self.mergenet(input_boxes)
+                        merge_box = self.mergenet(input_boxes)      # 问题1：维度应该为(g, k, d)，对一批次的模型来进行训练，而不是(k, d)
                         output_boxes = merge_box
                     # clamp and save (the clamp operate will borken the gradient)
                     # output_boxes[:, 3:6] = torch.clamp(output_boxes[:, 3:6], min=1e-5)
@@ -267,7 +267,7 @@ class Ensemble(nn.Module):
                 gt_match_box = gt_box[max_iou_index][iou_n]
 
                 # compute the loss
-                loss = self.loss_compute(pred_match_box, gt_match_box)
+                loss = self.loss_compute(pred_match_box, gt_match_box)      # 问题2：在loss损失计算中没有进行一一匹配
                 # loss = F.mse_loss(pred_match_box, gt_match_box)
 
                 # filter the nan or zero result

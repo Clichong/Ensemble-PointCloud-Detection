@@ -40,7 +40,7 @@ def parse_config():
     parser.add_argument('--epochs', type=int, default=2, required=False, help='number of epochs to train for')
     parser.add_argument('--workers', type=int, default=0, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
-    parser.add_argument('--model_choose', type=str, default='swim', help='[weight, attn, swim] to choose')
+    parser.add_argument('--model_choose', type=str, default='weig', help='[weight, attn, swim] to choose')
     parser.add_argument('--ckpt_name', type=str, default=None, help='ensemble ckpt load for experiment')
     parser.add_argument('--save_name', type=str, default=None, help='ensemble ckpt save for experiment')
     parser.add_argument('--id', type=str, default='6', help='choose gpu id')
