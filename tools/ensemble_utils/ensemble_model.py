@@ -1,6 +1,7 @@
 import os.path
 import pickle
 
+import threading, multiprocessing
 import numpy as np
 import torch
 import torch.nn as nn
@@ -122,10 +123,11 @@ class Ensemble(nn.Module):
         return new_ret_dict
 
     def non_max_suppression(self, ensemble_dict_list, cond_thres=0.2, iou_thresh=0.3):
-        new_pred_dicts = []
-        for ensemble_dict in ensemble_dict_list:
+        batch_size = len(ensemble_dict_list)
+        new_pred_dicts = [None] * batch_size
+
+        def _non_max_suppression(ensemble_dict, index):
             # concat into tensor
-            batch_size = len(ensemble_dict_list)
             boxes = ensemble_dict['pred_boxes']
             scores = ensemble_dict['pred_scores']
             labels = ensemble_dict['pred_labels']
@@ -179,8 +181,8 @@ class Ensemble(nn.Module):
                     boxes = boxes[iou_mask == 0]
 
             # concat the result
-            dc_collect = torch.cat(dc_collect, dim=0)           # (g, d)
-            input_collect = torch.cat(input_collect, dim=0)     # (g, k, d)
+            dc_collect = torch.cat(dc_collect, dim=0)           # (g, 11)
+            input_collect = torch.cat(input_collect, dim=0)     # (g, k, 7)
             assert dc_collect.shape[0] == input_collect.shape[0]
 
             # get merge box with encoder and decoder
@@ -199,7 +201,18 @@ class Ensemble(nn.Module):
             info[:, 3:6].masked_scatter_(mask, dc_collect[:, 3:6][mask])    # in-place to keep gradiant
             assert (info[:, 3:6] > 0).all(), "boxes size must be > 0"
 
-            new_pred_dicts.append(info)
+            new_pred_dicts[index] = info
+
+        # mutil thread to accelerate
+        threads = []
+        for index, ensemble_dict in enumerate(ensemble_dict_list):
+            thread = threading.Thread(target=_non_max_suppression, args=(ensemble_dict, index, ))   # create
+            threads.append(thread)
+            thread.start()
+
+        # wait for all the thread finish
+        for thread in threads:
+            thread.join()
 
         return new_pred_dicts
 
