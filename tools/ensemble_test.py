@@ -240,6 +240,8 @@ def parse_config():
     parser.add_argument('--workers', type=int, default=4, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
     parser.add_argument('--ckpt_name', type=str, default=None, help='ensemble ckpt load for experiment')
+    parser.add_argument('--model_choose', type=str, default='weig', help='[weight, attn, swim] to choose')
+    parser.add_argument('--id', type=str, default='6', help='choose gpu id')
 
     parser.add_argument('--pretrained_model', type=str, default=None, help='pretrained_model')
     parser.add_argument('--launcher', choices=['none', 'pytorch', 'slurm'], default='none')
@@ -267,7 +269,7 @@ def parse_config():
     # cfg.EXP_GROUP_PATH = '/'.join(args.cfg_file.split('/')[1:-1])  # remove 'cfgs' and 'xxxx.yaml'
 
     np.random.seed(1024)
-
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.id
     return args, cfg
 
 
@@ -443,7 +445,8 @@ def main():
     # ensemble model
     ckpt_list = args.ckpt_list if args.ckpt_list is not None else output_dir / 'ckpt'
     cfg_list = args.cfg_list
-    model = Ensemble(cfg_list, ckpt_list, test_set, logger, dist_test)
+    model_choose = args.model_choose
+    model = Ensemble(cfg_list, ckpt_list, test_set, logger, dist_test, model_name=model_choose)
     # model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=test_set)
 
     # load model

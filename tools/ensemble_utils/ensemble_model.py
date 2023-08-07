@@ -9,6 +9,7 @@ import torchvision
 from einops.layers.torch import Rearrange
 from collections import defaultdict
 from pathlib import Path
+from scipy.optimize import linear_sum_assignment
 
 from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file, merge_new_config
 from pcdet.datasets import build_dataloader
@@ -137,25 +138,28 @@ class Ensemble(nn.Module):
             sort_index = info[:, -2].argsort(descending=True)
             info = info[sort_index]
 
-            # collect the close boxes
-            res = []
+            # nms process
+            dc_collect, input_collect = [], []      # collect the close boxes
             labels = info[:, -1]
             for c in labels.unique():
                 boxes = info[labels == c][:, :7]    # has been sorted
                 dc = info[labels == c]
                 while len(dc):
                     if len(dc) <= 1:
-                        res.append(dc)
+                        dc_collect.append(dc)
+                        input_boxes = torch.zeros([self.max_merge_nums, self.box_size], device=info.device)  # (k, d)
+                        input_boxes[:1] = dc[:1, :7]
+                        input_collect.append(input_boxes[None, :])
                         break
 
                     # get the match thresh
                     iou = box_utils.boxes3d_nearest_bev_iou(boxes[:1], boxes).view(-1)
                     iou_mask = (iou > iou_thresh)
-                    boxes_overlap = boxes[iou_mask]  # (k2, 11) or (0, 11)
+                    boxes_overlap = boxes[iou_mask]     # (k2, 7) or (0, 7)
 
                     # get the max iou box (top 1)
                     max_iou_index = iou.argsort(descending=True)[:1]
-                    boxes_max = boxes[max_iou_index]
+                    boxes_max = boxes[max_iou_index]    # (1, 7)
 
                     # get input box
                     count = boxes_overlap.shape[0]      # overlap boxes numbers
@@ -165,34 +169,35 @@ class Ensemble(nn.Module):
                     else:
                         input_boxes[:1] = boxes_max
 
-                    # get merge box with encoder and decoder
-                    if getattr(self, 'boxcoder'):
-                        encode_boxes = self.boxcoder.encode_torch(input_boxes)
-                        merge_box = self.mergenet(encode_boxes)  # (1, d)
-                        output_boxes = self.boxcoder.decode_torch(merge_box)
-                    else:
-                        merge_box = self.mergenet(input_boxes)      # 问题1：维度应该为(g, k, d)，对一批次的模型来进行训练，而不是(k, d)
-                        output_boxes = merge_box
-                    # clamp and save (the clamp operate will borken the gradient)
-                    # output_boxes[:, 3:6] = torch.clamp(output_boxes[:, 3:6], min=1e-5)
-
-                    dc[:1][:, :7] = output_boxes
-                    res.append(dc[:1])
+                    # collect the data array
+                    dc_collect.append(dc[max_iou_index])                # (1, 11)
+                    input_collect.append(input_boxes[None, :])          # (k, d)
 
                     # filter the match iou sample
                     dc = dc[iou_mask == 0]
                     boxes = boxes[iou_mask == 0]
 
-            info = torch.cat(res, dim=0)
+            # concat the result
+            dc_collect = torch.cat(dc_collect, dim=0)           # (g, d)
+            input_collect = torch.cat(input_collect, dim=0)     # (g, k, d)
+            assert dc_collect.shape[0] == input_collect.shape[0]
 
-            # Avoid setting the box size < 0, boxed size in 345 and keep gradiant
-            min_boxes = info[:, 3:6].min(dim=0)[0] - 1e-1
-            min_boxes = min_boxes.repeat(info.shape[0], 1)
+            # get merge box with encoder and decoder
+            if getattr(self, 'boxcoder'):
+                encode_boxes = self.boxcoder.encode_torch(input_collect)
+                merge_box = self.mergenet(encode_boxes)  # (1, d)
+                output_boxes = self.boxcoder.decode_torch(merge_box)
+            else:
+                merge_box = self.mergenet(input_collect)    # (g, k, d) -> (g, d)
+                output_boxes = merge_box
+
+            #  Avoid setting the box size < 0
+            info = dc_collect.clone()
+            info[:, :7] = output_boxes
             mask = info[:, 3:6] <= 0
-            info[:, 3:6][mask] -= min_boxes[mask]
-
-            # eval the result
+            info[:, 3:6].masked_scatter_(mask, dc_collect[:, 3:6][mask])    # in-place to keep gradiant
             assert (info[:, 3:6] > 0).all(), "boxes size must be > 0"
+
             new_pred_dicts.append(info)
 
         return new_pred_dicts
@@ -233,11 +238,11 @@ class Ensemble(nn.Module):
             return pred_dicts, ret_dict
 
 
-    def get_loss(self, ensemble_pred_dict, gt_dicts, iou_thresh=0.1):
+    def get_loss(self, ensemble_pred_dict, gt_dicts, iou_thresh=0.25):
         """
         params:
             pred_infos: [boxes, scores, labels]
-            gt_dicts:   [boxes, labels]
+            gt_dicts:   [boxes, labels] -> [loc(3), size(3), heading(1), velocity(2), labels(1)]
         """
         pred_infos = self.non_max_suppression(ensemble_pred_dict)
         batch_size = len(pred_infos)
@@ -260,14 +265,24 @@ class Ensemble(nn.Module):
                     continue
 
                 # get the match pred boxes and gt boxes, both shape is (k, 7)
+                one_2_more_match = False
                 iou = box_utils.boxes3d_nearest_bev_iou(pred_box, gt_box)  # (m, n)
-                iou_n = (iou > iou_thresh).any(-1)     # iou thresh
-                pred_match_box = pred_box[iou_n]
-                max_iou_index = iou.argmax(-1)
-                gt_match_box = gt_box[max_iou_index][iou_n]
+                if one_2_more_match:    # more pred match one gt
+                    iou_n = (iou > iou_thresh).any(-1)     # iou thresh
+                    pred_match_box = pred_box[iou_n]
+                    max_iou_index = iou.argmax(-1)
+                    gt_match_box = gt_box[max_iou_index][iou_n]
+                else:    # one pred match one gt
+                    cost_mat = iou.cpu().detach().numpy()   # cost matrix (m, n)
+                    index, target = linear_sum_assignment(-cost_mat)
+                    mask = cost_mat[index, target] > iou_thresh         # filter the low match
+                    new_index, new_target = index[mask], target[mask]   # update by the mask
+                    pred_match_box = pred_box[new_index]    # (k, d)
+                    gt_match_box = gt_box[new_target]       # (k, d)
+                    assert pred_match_box.shape[0] == gt_match_box.shape[0]
 
                 # compute the loss
-                loss = self.loss_compute(pred_match_box, gt_match_box)      # 问题2：在loss损失计算中没有进行一一匹配
+                loss = self.loss_compute(pred_match_box, gt_match_box)
                 # loss = F.mse_loss(pred_match_box, gt_match_box)
 
                 # filter the nan or zero result
@@ -279,75 +294,6 @@ class Ensemble(nn.Module):
             reg_batch_loss += reg_class_loss / use_label_num if use_label_num else 0
 
         reg_loss = reg_batch_loss / batch_size
-        return reg_loss
-
-
-    def get_training_loss(self, pred_dicts, gt_dicts):
-        BOX_SIZE = self.cfg['BOX_SIZE']
-
-        batch_size = len(pred_dicts)
-        pred_lists = []
-        for pred_dict in pred_dicts:
-            pred = torch.cat(
-                [pred_dict['pred_boxes'], pred_dict['pred_scores'][:, None], pred_dict['pred_labels'][:, None]], dim=-1
-            )
-            # sort confidence
-            sort_index = pred[:, -2].argsort(descending=True)  # 从大到小排序
-            pred = pred[sort_index]
-            pred_lists.append(pred)
-
-        reg_loss_total = 0
-        for batch in range(batch_size):
-            gt_frame = gt_dicts[batch]
-            pred_frame = pred_lists[batch]
-
-            # 过滤掉用0填充的gt部分
-            n = gt_frame.any(-1).sum()
-            gt_frame = gt_frame[:n]
-
-            reg_loss_frame = 0
-            # 对每个gt进行样本分配并进行损失计算, 分配的标准是高过thresh或者最高的iou值
-            for gt in gt_frame:
-                # get the same label pred
-                gt_box, gt_label = gt[:7], gt[-1]
-                label_mask = pred_frame[:, -1] == gt_label
-                pred_frame_label = pred_frame[label_mask]  # (k1, 11)
-                if pred_frame_label.shape[0] == 0:
-                    continue
-
-                # get the match thresh
-                iou = box_utils.boxes3d_nearest_bev_iou(gt_box[None, :], pred_frame_label[:, :7])
-                # iou = iou3d_nms_utils.boxes_iou3d_gpu(gt_box[None, :], pred_frame_label[:, :7])
-                iou_mask = (iou > 0.6).view(-1)
-                pred_frame_label_match = pred_frame_label[iou_mask]  # (k2, 11) or (0, 11)
-
-                # get the max iou box
-                max_iou_index = iou.argmax(dim=-1)
-                pred_frame_label_max_iou = pred_frame_label[max_iou_index]
-
-                # get input box
-                count = pred_frame_label_match.shape[0]
-                overlap_boxes = torch.zeros([self.max_merge_nums, BOX_SIZE], device=gt.device)  # (Max, 7)
-                if count > 1:   # 如果超出了范围最多也只选择前max_merge_nums个来进行融合
-                    overlap_boxes[:count] = pred_frame_label_match[:self.max_merge_nums, :7]  # (k, 7) to overlap
-                else:
-                    overlap_boxes[:1] = pred_frame_label_max_iou[:, :7]  # (1, 7) to overlap
-
-                # encoder and decoder to refine
-                overlap_boxes = self.boxcoder.encode_torch(overlap_boxes)
-                merge_box = self.mergenet(overlap_boxes)
-                box_decode = self.boxcoder.decode_torch(merge_box)
-
-                loss = F.mse_loss(box_decode.squeeze(0), gt_box)
-                # loss = F.smooth_l1_loss(box_decode.squeeze(0), gt_box)
-                reg_loss_frame += loss
-
-            # print('reg_loss_frame: ', reg_loss_frame / n)
-            reg_loss_total += reg_loss_frame / n
-
-        reg_loss = reg_loss_total / batch_size
-        # print('reg_loss_batch', reg_loss_total)
-        # print('reg_loss', reg_loss)
         return reg_loss
 
 

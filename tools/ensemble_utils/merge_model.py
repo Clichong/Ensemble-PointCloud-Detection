@@ -32,20 +32,25 @@ class MergeMLP(nn.Module):
 class WeightMergeNet(nn.Module):
     def __init__(self, max_c):
         super(WeightMergeNet, self).__init__()
-        w = (1.0 / torch.linspace(1, max_c, max_c)) ** 2       # func: (1 / x)^2
+        # alpha -> ∞, the same with nms
+        alpha = 10
+        w = (1.0 / torch.linspace(1, max_c, max_c)) ** alpha       # func: (1 / x)^α
         self.w = nn.Parameter(w, requires_grad=True)
 
     def forward(self, x):
         """
         Input
-            x: (max_c, 7)
+            x: (g, k, 7)
         Return:
-            Tensor: (7)
+            Tensor: (g, 7)
         """
         out = x * self.w[:, None]
-        k = x.any(-1).sum()
+        k = x.any(-1).sum(-1)
+
         # norm by the weights sum
-        return out[:k, :].sum(dim=0) / self.w[:k].sum()
+        w_ = x.new([self.w[:k_].sum() for k_ in k])     # keep the same device and dtype
+        res = (out * self.w[None, :, None]).sum(1) / w_[:, None]
+        return res
 
 
 class AttentionMergeNet(nn.Module):
@@ -234,10 +239,14 @@ class SwimMergeNet(nn.Module):
 
 if __name__ == '__main__':
     k = 5
-    x = torch.zeros([10, 7])
-    x[:k, :] = torch.rand(k, 7)
+    g = 100
+    # x = torch.zeros([10, 7])
+    # x[:k, :] = torch.rand(k, 7)
+
+    x = torch.rand([2, k, 7])
+    model = WeightMergeNet(max_c=k)
     # model = AttentionMergeNet(max_c=10, depth=3)
-    model = SwimMergeNet(max_c=10, depth=3, init_values=True, reg_token=True)
-    print(model)
+    # model = SwimMergeNet(max_c=10, depth=3, init_values=True, reg_token=True)
+    print(x)
     y = model(x)
     print(y)
