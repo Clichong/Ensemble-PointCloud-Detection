@@ -125,6 +125,7 @@ class Ensemble(nn.Module):
         new_pred_dicts = []
         for ensemble_dict in ensemble_dict_list:
             # concat into tensor
+            batch_size = len(ensemble_dict_list)
             boxes = ensemble_dict['pred_boxes']
             scores = ensemble_dict['pred_scores']
             labels = ensemble_dict['pred_labels']
