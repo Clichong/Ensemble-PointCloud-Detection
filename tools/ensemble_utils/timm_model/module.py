@@ -50,8 +50,8 @@ class Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x):
-        N, C = x.shape
-        qkv = self.qkv(x).reshape(N, 3, self.num_heads, self.head_dim).permute(1, 2, 0, 3)
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -67,7 +67,7 @@ class Attention(nn.Module):
             attn = self.attn_drop(attn)
             x = attn @ v
 
-        x = x.transpose(1, 2).reshape(N, C)
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -124,7 +124,7 @@ class SwimAttention(nn.Module):
     def __init__(
             self,
             dim,
-            max_c=10,
+            max_c=5,
             num_heads=1,
             qkv_bias=False,
             qk_norm=False,
@@ -165,8 +165,8 @@ class SwimAttention(nn.Module):
         return relative_position_bias
 
     def forward(self, x):
-        N, C = x.shape
-        qkv = self.qkv(x).reshape(N, 3, self.num_heads, self.head_dim).permute(1, 2, 0, 3)
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -178,12 +178,13 @@ class SwimAttention(nn.Module):
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
-            attn = attn + self.get_rel_pos_bias()   # (1, k, k) + (1, k, k)
+            attn = attn + self.get_rel_pos_bias()[None, :]   # (g, nh, k, k) + (1, nh, k, k)
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = attn @ v
 
-        x = x.transpose(1, 2).reshape(N, C)
+        # x = x.transpose(1, 2).reshape(N, C)
+        x = x.transpose(1, 2).reshape(B, N, -1)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -294,6 +295,6 @@ class ResPostBlock(nn.Module):
 
 if __name__ == '__main__':
     model = SwimAttention(dim=7)
-    x = torch.rand([10, 7])
+    x = torch.rand([5, 7])
     y = model(x)
     print(y.shape, '\n', y)

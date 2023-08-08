@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from functools import partial
 from typing import Callable, List, Optional, Sequence, Tuple, Union
 from timm.models.layers import Mlp, DropPath
+from timm.layers import PatchDropout
 from tools.ensemble_utils.timm_model.module import Block, SwimBlock
 
 class MergeMLP(nn.Module):
@@ -33,8 +34,8 @@ class WeightMergeNet(nn.Module):
     def __init__(self, max_c):
         super(WeightMergeNet, self).__init__()
         # alpha -> ∞, the same with nms
-        alpha = 10
-        w = (1.0 / torch.linspace(1, max_c, max_c)) ** alpha       # func: (1 / x)^α
+        self.alpha = 10
+        w = (1.0 / torch.linspace(1, max_c, max_c)) ** self.alpha       # func: (1 / x)^α
         self.w = nn.Parameter(w, requires_grad=True)
 
     def forward(self, x):
@@ -44,7 +45,10 @@ class WeightMergeNet(nn.Module):
         Return:
             Tensor: (g, 7)
         """
-        out = x * self.w[:, None]
+        # w = F.softmax(self.w)
+        w = self.w
+
+        out = x * w[:, None]
         k = x.any(-1).sum(-1)
 
         # norm by the weights sum
@@ -58,7 +62,7 @@ class AttentionMergeNet(nn.Module):
             self,
             max_c,
             global_pool: str = 'token',
-            embed_dim: int = 7,             # box size: (k, 7)
+            embed_dim: int = 7,             # box size: (g, k, 7)
             depth: int = 12,
             num_heads: int = 1,
             mlp_ratio: float = 4.,
@@ -96,17 +100,17 @@ class AttentionMergeNet(nn.Module):
         # self.no_embed_class = no_embed_class
         # self.grad_checkpointing = False
 
-        self.reg_token = nn.Parameter(torch.zeros(1, embed_dim))    # (1, 7)
+        self.reg_token = nn.Parameter(torch.zeros(1, 1, embed_dim))    # (1, 1, 7)
         embed_len = max_c + self.num_prefix_tokens
-        self.pos_embed = nn.Parameter(torch.randn(embed_len, embed_dim) * .02)  # (K+1, 7)
+        self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim) * .02)  # (K+1, 7)
         self.pos_drop = nn.Dropout(p=pos_drop_rate)
-        # if patch_drop_rate > 0:
-        #     self.patch_drop = PatchDropout(
-        #         patch_drop_rate,
-        #         num_prefix_tokens=self.num_prefix_tokens,
-        #     )
-        # else:
-        #     self.patch_drop = nn.Identity()
+        if patch_drop_rate > 0:
+            self.patch_drop = PatchDropout(
+                patch_drop_rate,
+                num_prefix_tokens=self.num_prefix_tokens,
+            )
+        else:
+            self.patch_drop = nn.Identity()
         self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
@@ -130,26 +134,29 @@ class AttentionMergeNet(nn.Module):
 
     def _pos_embed(self, x):
         if self.reg_token is not None:
-            x = torch.cat([self.reg_token, x], dim=0)    # (1, 7) + (max_c, 7)
-        x = x + self.pos_embed
+            x = torch.cat((self.reg_token.expand(x.shape[0], -1, -1), x), dim=1)  # (g, 1, d) + (g, k, d) -> (g, k+1, d)
+        x = x + self.pos_embed  # (g, k+1, d) + (1, k+1, d)
         return self.pos_drop(x)
 
     def forward(self, x):
         """
-        Params:
-            x: (max, 7)
+        Input
+            x: (g, k, 7)
         Return:
-            out: Tensor: (7, )
+            Tensor: (g, 7)
         """
-        base_ = x[0]
+        base_ = x[:, 0]
         x = self._pos_embed(x)
         # x = self.patch_drop(x)
         x = self.norm_pre(x)
         x = self.blocks(x)
         x = self.norm(x)
-        if self.global_pool:
-            x = x[self.num_prefix_tokens:].mean(dim=0) if self.global_pool == 'avg' else x[0]
-        return x + base_
+        if self.global_pool == 'avg':
+            x = x[self.num_prefix_tokens:].mean(dim=0)
+            return x
+        else:
+            reg_token = x[:, 0]
+            return reg_token + base_
 
 
 class SwimMergeNet(nn.Module):
@@ -192,7 +199,7 @@ class SwimMergeNet(nn.Module):
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.num_prefix_tokens = 1 if reg_token else 0
 
-        self.reg_token = nn.Parameter(torch.zeros(1, embed_dim)) if reg_token else None # (1, 7)
+        self.reg_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if reg_token else None      # (1, 1, 7)
         k_dim = max_c + self.num_prefix_tokens
         # embed_len = max_c + self.num_prefix_tokens
         # self.pos_embed = nn.Parameter(torch.randn(embed_len, embed_dim) * .02)  # (K+1, 7)
@@ -222,19 +229,22 @@ class SwimMergeNet(nn.Module):
 
     def forward(self, x):
         """
-        Params:
-            x: (max, 7)
+        Input
+            x: (g, k, 7)
         Return:
-            out: Tensor: (7, )
+            Tensor: (g, 7)
         """
-        base_ = x[0]
+        base_ = x[:, 0]
         if self.reg_token is not None:
-            x = torch.cat([self.reg_token, x], dim=0)    # (1, 7) + (max_c, 7)
+            x = torch.cat((self.reg_token.expand(x.shape[0], -1, -1), x), dim=1)  # (g, 1, d) + (g, k, d) -> (g, k+1, d)
         x = self.blocks(x)
         x = self.norm(x)
-        if self.global_pool:
-            x = x[self.num_prefix_tokens:].mean(dim=0) if self.global_pool == 'avg' else x[0]
-        return x + base_
+        if self.global_pool == 'avg':
+            x = x[self.num_prefix_tokens:].mean(dim=0)
+            return x
+        else:
+            reg_token = x[:, 0]
+            return reg_token + base_
 
 
 if __name__ == '__main__':
@@ -245,8 +255,8 @@ if __name__ == '__main__':
 
     x = torch.rand([2, k, 7])
     model = WeightMergeNet(max_c=k)
-    # model = AttentionMergeNet(max_c=10, depth=3)
-    # model = SwimMergeNet(max_c=10, depth=3, init_values=True, reg_token=True)
+    # model = AttentionMergeNet(max_c=k, depth=3)
+    # model = SwimMergeNet(max_c=k, depth=3, init_values=True, reg_token=True)
     print(x)
     y = model(x)
     print(y)

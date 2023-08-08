@@ -37,7 +37,7 @@ class WeightedSmoothL1Loss(nn.Module):
         Return:
             loss: tensor()
         """
-        assert input.shape == target.shape and input.shape > 0
+        assert input.shape == target.shape
         # target = torch.where(torch.isnan(target), input, target)  # ignore nan targets
 
         diff = input - target
@@ -69,7 +69,7 @@ class WeightedMSELoss(nn.Module):
         Return:
             loss: tensor()
         """
-        assert input.shape == target.shape and input.shape > 0
+        assert input.shape == target.shape
         loss = (input - target) ** 2
 
         if self.weight is not None:

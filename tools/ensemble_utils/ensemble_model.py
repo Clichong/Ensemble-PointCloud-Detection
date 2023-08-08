@@ -29,7 +29,7 @@ import torch.nn.functional as F
 
 
 class Ensemble(nn.Module):
-    def __init__(self, cfg_list, ckpt_list, dataset, logger, dist_test=False, loss='mse', model_name='swim'):
+    def __init__(self, cfg_list, ckpt_list, dataset, logger, dist_test=False, loss='l1', model_name='swim'):
         super(Ensemble, self).__init__()
         self.ensemble_train = True
 
@@ -213,6 +213,9 @@ class Ensemble(nn.Module):
         # wait for all the thread finish
         for thread in threads:
             thread.join()
+        # for ensemble_dict in ensemble_dict_list:
+        #     info = _non_max_suppression(ensemble_dict)
+        #     new_pred_dicts.append(info)
 
         return new_pred_dicts
 
@@ -257,6 +260,10 @@ class Ensemble(nn.Module):
         params:
             pred_infos: [boxes, scores, labels]
             gt_dicts:   [boxes, labels] -> [loc(3), size(3), heading(1), velocity(2), labels(1)]
+
+        Probloms:
+            存在类别不均衡的问题，导致训练损失不稳定; 假设当前批次有100个样本,每个类别的数量比例存在严重不均衡
+
         """
         pred_infos = self.non_max_suppression(ensemble_pred_dict)
         batch_size = len(pred_infos)
@@ -273,6 +280,7 @@ class Ensemble(nn.Module):
             use_label_num = 0
             unique_label = pred_info[:, -1].unique()
             for c in unique_label:
+                # get current label pred and gt
                 pred_box = pred_info[pred_info[:, -1] == c][:, :7]      # (m, 7)
                 gt_box = gt_info[gt_info[:, -1] == c][:, :7]            # (n, 7)
                 if pred_box.shape[0] == 0 or gt_box.shape[0] == 0:
@@ -293,14 +301,10 @@ class Ensemble(nn.Module):
                     new_index, new_target = index[mask], target[mask]   # update by the mask
                     pred_match_box = pred_box[new_index]    # (k, d)
                     gt_match_box = gt_box[new_target]       # (k, d)
-                    assert pred_match_box.shape[0] == gt_match_box.shape[0]
 
-                # compute the loss
-                loss = self.loss_compute(pred_match_box, gt_match_box)
-                # loss = F.mse_loss(pred_match_box, gt_match_box)
-
-                # filter the nan or zero result
-                if loss > 0:
+                # compute the loss and filter the nan or zero result
+                if gt_match_box.shape[0] > 0:
+                    loss = self.loss_compute(pred_match_box, gt_match_box)
                     reg_class_loss += loss
                     use_label_num += 1
 
@@ -329,7 +333,6 @@ class Ensemble(nn.Module):
             pred_dict['pred_labels'] = info[:, -1].type(torch.int64)
             pred_dicts.append(pred_dict)
         return pred_dicts
-
 
 
 if __name__ == '__main__':
