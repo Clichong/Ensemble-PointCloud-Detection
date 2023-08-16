@@ -29,208 +29,6 @@ from ensemble_utils.ensemble_model import Ensemble
 from ensemble_utils.ensemble_setting import ensemble_cfg
 
 
-# class Ensemble(torch.nn.ModuleList):
-#     def __init__(self, cfg_list, ckpt_list, dataset, logger, dist_test=False):
-#         super(Ensemble, self).__init__()
-#         assert len(cfg_list) == len(ckpt_list), "Number dont match between cfg_list and ckpt_list"
-#         self.cfg_list = cfg_list
-#         self.ckpt_list = ckpt_list
-#         self.dataset = dataset
-#         self.logger = logger
-#         self.dist_test = dist_test
-#         self.load_model()
-#
-#     def load_model(self):
-#         for cfg_path, ckpt_path in zip(self.cfg_list, self.ckpt_list):
-#             model_cfg = self.load_model_cfg(cfg_path)
-#
-#             model = build_network(model_cfg=model_cfg, num_class=len(self.dataset.class_names), dataset=self.dataset)
-#             with torch.no_grad():
-#                 model.load_params_from_file(filename=ckpt_path,
-#                                             logger=self.logger,
-#                                             to_cpu=self.dist_test,
-#                                             pre_trained_path=None)
-#                 model.cuda()
-#             self.append(model)
-#
-#         print("load {} model success".format(len(self)))
-#
-#     def load_model_cfg(self, cfg_path):
-#         import yaml
-#         from easydict import EasyDict
-#
-#         config = EasyDict()
-#         with open(cfg_path, 'r') as f:
-#             new_config = yaml.safe_load(f)
-#             merge_new_config(config=config, new_config=new_config)
-#
-#         return config.MODEL
-#
-#     def xywh2xyxy(self, x):
-#         # Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
-#         y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
-#         y[:, 0] = x[:, 0] - x[:, 2] / 2  # top left x
-#         y[:, 1] = x[:, 1] - x[:, 3] / 2  # top left y
-#         y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
-#         y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
-#         return y
-#
-#     def xyxy2xywh(self, x):
-#         y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
-#         y[:, 0] = (x[:, 0] + x[:, 2]) / 2  # x center
-#         y[:, 1] = (x[:, 1] + x[:, 3]) / 2  # y center
-#         y[:, 2] = x[:, 2] - x[:, 0]        # width
-#         y[:, 3] = x[:, 3] - x[:, 1]        # height
-#         return y
-#
-#     def statistic_recall_info(self,  ret_dict_list):
-#         new_ret_dict = defaultdict(int)     # init with zero
-#         key_list = ret_dict_list[0].keys()  # each ret_dict should be use the same keys
-#         model_nums = len(ret_dict_list)
-#         for key in key_list:
-#             for ret_dict in ret_dict_list:
-#                 new_ret_dict[key] += ret_dict[key]
-#             new_ret_dict[key] = round(new_ret_dict[key] / model_nums)
-#         return new_ret_dict
-#
-#     def non_max_suppression(self, ensemble_dict_list, cond_thres=0.2, iou_thresh=0.3):
-#         new_pred_dicts = []
-#         for ensemble_dict in ensemble_dict_list:
-#             boxes = ensemble_dict['pred_boxes']
-#             scores = ensemble_dict['pred_scores']
-#             labels = ensemble_dict['pred_labels']
-#
-#             info = torch.cat([boxes, scores[:, None], labels[:, None]], dim=-1)
-#
-#             cond_mask = info[:, -2] > cond_thres
-#             info = info[cond_mask]
-#
-#             # max_w, max_l, max_h, min_lwh = 5.0, 3.0, 3.0, 0.05
-#             # size_mask = torch.cat(
-#             #     [info[:, 3:4] < max_w, info[:, 4:5] < max_l, info[:, 5:6] < max_h, info[:, 3:6] > min_lwh], dim=-1
-#             # )
-#             # size_mask = size_mask.all(-1)
-#             # info = info[size_mask]
-#
-#             sort_index = info[:, -2].argsort(descending=True)
-#             info = info[sort_index]
-#
-#             box_xywl = info[:, [0, 1, 3, 4]]        # xywl
-#             box_xyxy = self.xywh2xyxy(box_xywl)     # xyxy
-#
-#             # SHIFT_NUM = 100
-#             info[:, [0, 1, 3, 4]] = box_xyxy + 100.
-#
-#             # merge-nms
-#             res = []
-#             labels = info[:, -1]
-#             for c in labels.unique():
-#                 boxes = info[labels == c][:, [0, 1, 3, 4]]
-#                 dc = info[labels == c]
-#                 while len(dc):
-#                     if len(dc) == 1:
-#                         res.append(dc)
-#                         break
-#                     i = torchvision.ops.box_iou(boxes[:1], boxes).squeeze(0) > iou_thresh  # i = True/False的集合
-#                     scores = dc[i, -2:-1]  # score
-#                     boxes[0, :4] = (scores * boxes[i, :4]).sum(0) / scores.sum()  # 重叠框位置信息求解平均值 (k, 4)
-#                     dc[:1][:, [0, 1, 3, 4]] = boxes[0, :4]
-#                     res.append(dc[:1])
-#                     dc = dc[i == 0]
-#                     boxes = boxes[i == 0]
-#
-#             info = torch.cat(res, dim=0)
-#
-#             box_xyxy = info[:, [0, 1, 3, 4]] - 100.
-#             info[:, [0, 1, 3, 4]] = self.xyxy2xywh(box_xyxy)
-#
-#             # keep the same type with origin
-#             pred_dict = dict()
-#             pred_dict['pred_boxes'] = info[:, :9]
-#             pred_dict['pred_scores'] = info[:, -2]
-#             pred_dict['pred_labels'] = info[:, -1].type(torch.int64)
-#             new_pred_dicts.append(pred_dict)
-#
-#         return new_pred_dicts
-#
-#     def nms(self, ensemble_dict_list, cond_thres=0.2, nms_thresh=0.3):
-#         new_pred_dicts = []
-#         for ensemble_dict in ensemble_dict_list:
-#             boxes = ensemble_dict['pred_boxes']
-#             scores = ensemble_dict['pred_scores']
-#             labels = ensemble_dict['pred_labels']
-#
-#             info = torch.cat([boxes, scores[:, None], labels[:, None]], dim=-1)
-#
-#             cond_mask = info[:, -2] > cond_thres
-#             info = info[cond_mask]
-#
-#             # max_w, max_l, max_h, min_lwh = 5.0, 3.0, 3.0, 0.05
-#             # size_mask = torch.cat(
-#             #     [info[:, 3:4] < max_w, info[:, 4:5] < max_l, info[:, 5:6] < max_h, info[:, 3:6] > min_lwh], dim=-1
-#             # )
-#             # size_mask = size_mask.all(-1)
-#             # info = info[size_mask]
-#
-#             sort_index = info[:, -2].argsort(descending=True)
-#             info = info[sort_index]
-#
-#             box_xywl = info[:, [0, 1, 3, 4]]        # xywl
-#             box_xyxy = self.xywh2xyxy(box_xywl)     # xyxy
-#
-#             # use hard batch nms
-#             nms_index = torchvision.ops.boxes.batched_nms(box_xyxy, info[:, -2], info[:, -1], nms_thresh)
-#             info = info[nms_index]
-#
-#             # keep the same type with origin
-#             pred_dict = dict()
-#             pred_dict['pred_boxes'] = info[:, :9].type(boxes.dtype)
-#             pred_dict['pred_scores'] = info[:, -2].type(scores.dtype)
-#             pred_dict['pred_labels'] = info[:, -1].type(labels.dtype)
-#             new_pred_dicts.append(pred_dict)
-#
-#         return new_pred_dicts
-#
-#     def post_process(self, ensemble_pred_dict, ret_dict_list):
-#         # 1) 对多模型的recall进行平均处理
-#         ret_dict = self.statistic_recall_info(ret_dict_list)
-#
-#         # 2) 对多模型的预测结果使用nms来进行评估(2d / 3d)
-#         pred_dicts = self.non_max_suppression(ensemble_pred_dict)
-#
-#         return pred_dicts, ret_dict
-#
-#     def forward(self, batch_dict):
-#         pred_dict_list, ret_dict_list = [], []
-#
-#         # save the result from different model
-#         for model in self:
-#             pred_dict, ret_dict = model(batch_dict)
-#             pred_dict_list.append(pred_dict)
-#             ret_dict_list.append(ret_dict)
-#
-#         # ensemble the result from different model
-#         batch_size = batch_dict['batch_size']
-#         ensemble_pred_dict = []
-#         for frame in range(batch_size):        # 遍历点云帧
-#             ensemble_dict = defaultdict(list)
-#             # 将每个模型的对应帧场景预测结果进行存储
-#             for pred_dict in pred_dict_list:
-#                 ensemble_dict['pred_boxes'].append(pred_dict[frame]['pred_boxes'])
-#                 ensemble_dict['pred_scores'].append(pred_dict[frame]['pred_scores'])
-#                 ensemble_dict['pred_labels'].append(pred_dict[frame]['pred_labels'])
-#                 # if 'pred_ious' in pred_dict[frame]:       # not use
-#                 #     ensemble_dict['pred_ious'].append(pred_dict[frame]['pred_ious'])
-#             # 将多模型的预测结果进行拼接操作
-#             ensemble_dict['pred_boxes'] = torch.cat(ensemble_dict['pred_boxes'], dim=0)
-#             ensemble_dict['pred_scores'] = torch.cat(ensemble_dict['pred_scores'], dim=0)
-#             ensemble_dict['pred_labels'] = torch.cat(ensemble_dict['pred_labels'], dim=0)
-#             ensemble_pred_dict.append(ensemble_dict)
-#
-#         # return nms result
-#         pred_dicts, ret_dict = self.post_process(ensemble_pred_dict, ret_dict_list)
-#         return pred_dicts, ret_dict
-
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
     parser.add_argument('--cfg_list', type=str, default=None, help='specify the config for training')
@@ -240,8 +38,8 @@ def parse_config():
     parser.add_argument('--workers', type=int, default=4, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
     parser.add_argument('--ckpt_name', type=str, default=None, help='ensemble ckpt load for experiment')
-    parser.add_argument('--model_choose', type=str, default='weig', help='[weight, attn, swim] to choose')
-    parser.add_argument('--id', type=str, default='6', help='choose gpu id')
+    parser.add_argument('--model_choose', type=str, default='attn', help='[weight, attn, swim] to choose')
+    parser.add_argument('--id', type=str, default='0', help='choose gpu id')
 
     parser.add_argument('--pretrained_model', type=str, default=None, help='pretrained_model')
     parser.add_argument('--launcher', choices=['none', 'pytorch', 'slurm'], default='none')
@@ -292,14 +90,22 @@ def eval_ckpt(cfg, args, model, dataloader, epoch_id, logger, dist_test=False, r
     det_annos = []
 
     logger.info('*************** EPOCH %s EVALUATION *****************' % epoch_id)
+
+    # 重新使用分布式加载模型会导致模式的重新切换
     if dist_test:
         num_gpus = torch.cuda.device_count()
         local_rank = cfg.LOCAL_RANK % num_gpus
-        model = torch.nn.parallel.DistributedDataParallel(
-                model,
-                device_ids=[local_rank],
-                broadcast_buffers=False
+        # model = torch.nn.parallel.DistributedDataParallel(
+        #         model,
+        #         device_ids=[local_rank],
+        #         broadcast_buffers=False
+        # )
+        model.mergenet = torch.nn.parallel.DistributedDataParallel(
+            model.mergenet,
+            device_ids=[local_rank],
+            broadcast_buffers=False
         )
+    model.mergenet.eval()     # in need with dist_test
 
     if cfg.LOCAL_RANK == 0:
         progress_bar = tqdm.tqdm(total=len(dataloader), leave=True, desc='eval', dynamic_ncols=True)

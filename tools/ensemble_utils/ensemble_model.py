@@ -37,16 +37,17 @@ class Ensemble(nn.Module):
         self.box_size = 7
         self.cfg = ensemble_cfg
         self.max_merge_nums = self.cfg['MAX_MERGE_NUMS']  # hyperparameter
-        print('max merge nums = {}'.format(self.max_merge_nums))
 
         assert model_name in ['swim', 'attn', 'weig'], "No such {} model to choose.".format(model_name)
+        depth, init_values = self.cfg['MODEL_DEPTH'], self.cfg['INIT_VALUE']
         if model_name == 'swim':
-            self.mergenet = merge_model.SwimMergeNet(max_c=self.max_merge_nums, depth=3, init_values=True, reg_token=True)
+            self.mergenet = merge_model.SwimMergeNet(max_c=self.max_merge_nums, depth=depth, init_values=init_values)
         elif model_name == 'attn':
-            self.mergenet = merge_model.AttentionMergeNet(max_c=self.max_merge_nums, depth=3)
+            self.mergenet = merge_model.AttentionMergeNet(max_c=self.max_merge_nums, depth=depth, init_values=init_values)
         elif model_name == 'weig':
             self.mergenet = merge_model.WeightMergeNet(max_c=self.max_merge_nums)
         self.mergenet.cuda()
+        logger.info('\nmax merge nums: {}\nmodel choose: {}\nmodel depth: {}'.format(self.max_merge_nums, model_name, depth))
 
         # load mutil model
         assert len(cfg_list) == len(ckpt_list), "Number dont match between cfg_list and ckpt_list"
@@ -126,7 +127,7 @@ class Ensemble(nn.Module):
         batch_size = len(ensemble_dict_list)
         new_pred_dicts = [None] * batch_size
 
-        def _non_max_suppression(ensemble_dict, index):
+        def _non_max_suppression(ensemble_dict, index=0):
             # concat into tensor
             boxes = ensemble_dict['pred_boxes']
             scores = ensemble_dict['pred_scores']
@@ -201,21 +202,23 @@ class Ensemble(nn.Module):
             info[:, 3:6].masked_scatter_(mask, dc_collect[:, 3:6][mask])    # in-place to keep gradiant
             assert (info[:, 3:6] > 0).all(), "boxes size must be > 0"
 
-            new_pred_dicts[index] = info
+            # new_pred_dicts[index] = info
+            return info
 
         # mutil thread to accelerate
-        threads = []
-        for index, ensemble_dict in enumerate(ensemble_dict_list):
-            thread = threading.Thread(target=_non_max_suppression, args=(ensemble_dict, index, ))   # create
-            threads.append(thread)
-            thread.start()
+        # threads = []
+        # for index, ensemble_dict in enumerate(ensemble_dict_list):
+        #     thread = threading.Thread(target=_non_max_suppression, args=(ensemble_dict, index, ))   # create
+        #     threads.append(thread)
+        #     thread.start()
 
         # wait for all the thread finish
-        for thread in threads:
-            thread.join()
-        # for ensemble_dict in ensemble_dict_list:
-        #     info = _non_max_suppression(ensemble_dict)
-        #     new_pred_dicts.append(info)
+        # for thread in threads:
+        #     thread.join()
+
+        for i, ensemble_dict in enumerate(ensemble_dict_list):
+            info = _non_max_suppression(ensemble_dict)
+            new_pred_dicts[i] = info
 
         return new_pred_dicts
 
@@ -338,6 +341,6 @@ class Ensemble(nn.Module):
 if __name__ == '__main__':
     box = torch.rand(7, 4)
     print(box)
-    model = MergeNet(max_c=7)
+    model = Ensemble.mer(max_c=7)
     out = model(box)
     print(out)
