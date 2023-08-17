@@ -31,30 +31,56 @@ class MergeMLP(nn.Module):
 
 
 class WeightMergeNet(nn.Module):
-    def __init__(self, max_c):
+    def __init__(self, max_c, alpha=0.5):
         super(WeightMergeNet, self).__init__()
         # alpha -> ∞, the same with nms
-        self.alpha = 10
-        w = (1.0 / torch.linspace(1, max_c, max_c)) ** self.alpha       # func: (1 / x)^α
-        self.w = nn.Parameter(w, requires_grad=True)
+        # self.alpha = 10
+        # w = (1.0 / torch.linspace(1, max_c, max_c)) ** self.alpha       # func: (1 / x)^α
+        # self.w = nn.Parameter(w, requires_grad=True)
 
-    def forward(self, x):
+        # weight merge with confidence
+        self.alpha = alpha
+        # self.alpha = nn.Parameter(torch.tensor(alpha), requires_grad=True)
+        self.w = nn.Parameter(torch.ones(max_c), requires_grad=True)   # weight: [k]
+
+    def forward(self, x, conf=None):
         """
         Input
-            x: (g, k, 7)
+            x:          (g, k, 7)
+            confidence: (g, k, 1)
         Return:
-            Tensor: (g, 7)
+            Tensor:     (g, 7)
         """
-        # w = F.softmax(self.w)
-        w = self.w
+        if conf is None:
+            w = self.w
 
-        out = x * w[:, None]
-        k = x.any(-1).sum(-1)
+            out = x * w[:, None]
+            k = x.any(-1).sum(-1)
 
-        # norm by the weights sum
-        w_ = x.new([self.w[:k_].sum() for k_ in k])     # keep the same device and dtype
-        res = (out * self.w[None, :, None]).sum(1) / w_[:, None]
-        return res
+            # norm by the weights sum
+            w_ = x.new([self.w[:k_].sum() for k_ in k])     # keep the same device and dtype
+            res = (out * self.w[None, :, None]).sum(1) / w_[:, None]
+            return res
+
+        if conf is not None:
+            assert x.shape[:2] == conf.shape[:2]
+
+            # weight add with conf
+            w = self.w
+            out_c = x * conf
+            out_w = x * w[None, :, None]
+
+            # norm add by weight
+            k = x.any(-1).sum(-1)
+            w_ = x.new([w[:k_].sum() for k_ in k])      # (g, )
+            out_w = out_w.sum(1) / w_[:, None]
+
+            # norm add by confidence
+            conf_ = x.new([conf[i][:k_].sum() for i, k_ in enumerate(k)])   # (g, )
+            out_c = out_c.sum(1) / conf_[:, None]
+
+            res = self.alpha * out_w + (1 - self.alpha) * out_c
+            return res
 
 
 class AttentionMergeNet(nn.Module):
@@ -138,12 +164,12 @@ class AttentionMergeNet(nn.Module):
         x = x + self.pos_embed  # (g, k+1, d) + (1, k+1, d)
         return self.pos_drop(x)
 
-    def forward(self, x):
+    def forward(self, x, conf=None):
         """
         Input
-            x: (g, k, 7)
+            x:          (g, k, 7)
         Return:
-            Tensor: (g, 7)
+            Tensor:     (g, 7)
         """
         base_ = x[:, 0]
         x = self._pos_embed(x)
@@ -227,7 +253,7 @@ class SwimMergeNet(nn.Module):
             for i in range(depth)])
         self.norm = norm_layer(embed_dim) if not use_fc_norm else nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x, conf=None):
         """
         Input
             x: (g, k, 7)
@@ -254,9 +280,11 @@ if __name__ == '__main__':
     # x[:k, :] = torch.rand(k, 7)
 
     x = torch.rand([2, k, 7])
+    conf = torch.rand([2, k, 1])
     model = WeightMergeNet(max_c=k)
     # model = AttentionMergeNet(max_c=k, depth=3)
     # model = SwimMergeNet(max_c=k, depth=3, init_values=True, reg_token=True)
     print(x)
-    y = model(x)
+
+    y = model(x, conf)
     print(y)

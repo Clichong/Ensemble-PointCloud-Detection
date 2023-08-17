@@ -18,7 +18,9 @@ ensemble_cfg = {
     'BOX_SIZE': 7,
     'BOX_WEIGHT': [1,1,1,1,1,1,3.],
     'MODEL_DEPTH': 6,
-    'INIT_VALUE': False
+    'INIT_VALUE': False,
+    'LEARNAVBLE_EVAL': True,
+    'NMS_3d': True,
 }
 
 

@@ -123,7 +123,124 @@ class Ensemble(nn.Module):
             new_ret_dict[key] = round(new_ret_dict[key] / model_nums)
         return new_ret_dict
 
-    def non_max_suppression(self, ensemble_dict_list, cond_thres=0.2, iou_thresh=0.3):
+    def merge_nms_2d(self, ensemble_dict_list, cond_thres=0.2, iou_thresh=0.3):
+        new_pred_dicts = []
+        for ensemble_dict in ensemble_dict_list:
+            boxes = ensemble_dict['pred_boxes']
+            scores = ensemble_dict['pred_scores']
+            labels = ensemble_dict['pred_labels']
+
+            info = torch.cat([boxes, scores[:, None], labels[:, None]], dim=-1)
+
+            # filter the low confidence
+            cond_mask = info[:, -2] > cond_thres
+            info = info[cond_mask]
+
+            # Sort from highest to lowest confidence
+            sort_index = info[:, -2].argsort(descending=True)
+            info = info[sort_index]
+
+            # SHIFT_NUM = 100
+            box_xywl = info[:, [0, 1, 3, 4]]    # xywl
+            box_xyxy = xywh2xyxy(box_xywl)      # xyxy
+            info[:, [0, 1, 3, 4]] = box_xyxy + 100.
+
+            res = []
+            labels = info[:, -1]
+            for c in labels.unique():
+                boxes = info[labels == c][:, [0, 1, 3, 4]]
+                dc = info[labels == c]
+                while len(dc):
+                    if len(dc) == 1:
+                        res.append(dc)
+                        break
+
+                    # boxes or scores has been sorted
+                    i = torchvision.ops.box_iou(boxes[:1], boxes).squeeze(0) > iou_thresh        # 2d
+                    # i = box_utils.boxes3d_nearest_bev_iou(boxes[:1], boxes).view(-1) > iou_thresh  # 3d
+
+                    # merge with socres
+                    if i.sum()  > 1:
+                        scores = dc[i, -2:-1]  # score
+                        boxes[0, :4] = (scores * boxes[i, :4]).sum(0) / scores.sum()  # 重叠框位置信息求解平均值
+                        dc[:1][:, [0, 1, 3, 4]] = boxes[0, :4]
+
+                    # filter the overlap boxes
+                    res.append(dc[:1])
+                    dc = dc[i == 0]
+                    boxes = boxes[i == 0]
+
+            info = torch.cat(res, dim=0)
+
+            # chance
+            box_xyxy = info[:, [0, 1, 3, 4]] - 100.
+            info[:, [0, 1, 3, 4]] = xyxy2xywh(box_xyxy)
+            new_pred_dicts.append(info)
+
+        return new_pred_dicts
+
+
+    def merge_nms_3d(self, ensemble_dict_list, cond_thres=0.2, iou_thresh=0.3):
+        new_pred_dicts = []
+        for ensemble_dict in ensemble_dict_list:
+            boxes = ensemble_dict['pred_boxes']
+            scores = ensemble_dict['pred_scores']
+            labels = ensemble_dict['pred_labels']
+
+            info = torch.cat([boxes, scores[:, None], labels[:, None]], dim=-1)
+
+            # filter the low confidence
+            cond_mask = info[:, -2] > cond_thres
+            info = info[cond_mask]
+
+            # Sort from highest to lowest confidence
+            sort_index = info[:, -2].argsort(descending=True)
+            info = info[sort_index]
+
+            use_velo = True
+            use_dim = 9 if use_velo else 7
+
+            res = []
+            labels = info[:, -1]
+            for c in labels.unique():
+                boxes = info[labels == c][:, :use_dim]    # get current label boxes
+                dc = info[labels == c]                    # get current label info
+                while len(dc):
+                    if len(dc) == 1:
+                        res.append(dc)
+                        break
+
+                    # boxes or scores has been sorted
+                    # i = torchvision.ops.box_iou(boxes[:1], boxes).squeeze(0) > iou_thresh         # 2d
+                    i = box_utils.boxes3d_nearest_bev_iou(boxes[:1], boxes).view(-1) > iou_thresh   # 3d
+
+                    # merge with socres
+                    if i.sum()  > 1:
+                        scores = dc[i, -2:-1]   # score: [k, 1]
+                        boxes[0, :use_dim] = (scores * boxes[i, :use_dim]).sum(0) / scores.sum()  # 重叠框位置信息求解平均值 (7)
+                        dc[:1][:, :use_dim] = boxes[0, :use_dim]    # [1, 7]
+
+                    # filter the overlap boxes
+                    res.append(dc[:1])
+                    dc = dc[i == 0]
+                    boxes = boxes[i == 0]
+
+            info = torch.cat(res, dim=0)
+            new_pred_dicts.append(info)
+            # box_xyxy = info[:, [0, 1, 3, 4]] - 100.
+            # info[:, [0, 1, 3, 4]] = xyxy2xywh(box_xyxy)
+
+            # keep the same type with origin
+            # pred_dict = dict()
+            # pred_dict['pred_boxes'] = info[:, :9]
+            # pred_dict['pred_scores'] = info[:, -2]
+            # pred_dict['pred_labels'] = info[:, -1].type(torch.int64)
+            # new_pred_dicts.append(pred_dict)
+
+        return new_pred_dicts
+
+
+    def learnable_nms(self, ensemble_dict_list, cond_thres=0.2, iou_thresh=0.3):
         batch_size = len(ensemble_dict_list)
         new_pred_dicts = [None] * batch_size
 
@@ -144,6 +261,7 @@ class Ensemble(nn.Module):
 
             # nms process
             dc_collect, input_collect = [], []      # collect the close boxes
+            score_collect = []      # collect the close boxes score
             labels = info[:, -1]
             for c in labels.unique():
                 boxes = info[labels == c][:, :7]    # has been sorted
@@ -151,31 +269,44 @@ class Ensemble(nn.Module):
                 while len(dc):
                     if len(dc) <= 1:
                         dc_collect.append(dc)
-                        input_boxes = torch.zeros([self.max_merge_nums, self.box_size], device=info.device)  # (k, d)
+                        input_boxes = torch.zeros([self.max_merge_nums, self.box_size], device=info.device) # (k, d)
+                        input_score = torch.zeros([self.max_merge_nums, 1], device=info.device)  # (k, 1)
+
                         input_boxes[:1] = dc[:1, :7]
+                        input_score[:1] = dc[:, -2:-1]
+
                         input_collect.append(input_boxes[None, :])
+                        score_collect.append(input_score[None, :])
                         break
 
                     # get the match thresh
                     iou = box_utils.boxes3d_nearest_bev_iou(boxes[:1], boxes).view(-1)
                     iou_mask = (iou > iou_thresh)
-                    boxes_overlap = boxes[iou_mask]     # (k2, 7) or (0, 7)
+                    boxes_overlap = boxes[iou_mask]     # more than 1
+                    score_overlap = dc[iou_mask][:, -2:-1]
 
                     # get the max iou box (top 1)
-                    max_iou_index = iou.argsort(descending=True)[:1]
-                    boxes_max = boxes[max_iou_index]    # (1, 7)
+                    # max_iou_index = iou.argsort(descending=True)[:1]
+                    # boxes_max = boxes[max_iou_index]    # (1, 7)
 
                     # get input box
                     count = boxes_overlap.shape[0]      # overlap boxes numbers
                     input_boxes = torch.zeros([self.max_merge_nums, self.box_size], device=info.device)  # (k, d)
-                    if count > 1:
-                        input_boxes[:count] = boxes_overlap[:self.max_merge_nums]
-                    else:
-                        input_boxes[:1] = boxes_max
+                    input_score = torch.zeros([self.max_merge_nums, 1], device=info.device)  # (k, 1)
+
+                    input_boxes[:count] = boxes_overlap[:self.max_merge_nums]
+                    input_score[:count] = score_overlap[:self.max_merge_nums]
+
+                    # if count > 1:
+                    #     input_boxes[:count] = boxes_overlap[:self.max_merge_nums]
+                    #     # input_score[:count] = dc[]
+                    # else:
+                    #     input_boxes[:1] = boxes_max
 
                     # collect the data array
-                    dc_collect.append(dc[max_iou_index])                # (1, 11)
-                    input_collect.append(input_boxes[None, :])          # (k, d)
+                    dc_collect.append(dc[:1])                     # (1, 11)
+                    input_collect.append(input_boxes[None, :])    # (1, k, d)
+                    score_collect.append(input_score[None, :])    # (1, k, 1)
 
                     # filter the match iou sample
                     dc = dc[iou_mask == 0]
@@ -184,7 +315,8 @@ class Ensemble(nn.Module):
             # concat the result
             dc_collect = torch.cat(dc_collect, dim=0)           # (g, 11)
             input_collect = torch.cat(input_collect, dim=0)     # (g, k, 7)
-            assert dc_collect.shape[0] == input_collect.shape[0]
+            score_collect = torch.cat(score_collect, dim=0)     # (g, k, 1)
+            assert dc_collect.shape[0] == input_collect.shape[0] == score_collect.shape[0]
 
             # get merge box with encoder and decoder
             if getattr(self, 'boxcoder'):
@@ -192,7 +324,7 @@ class Ensemble(nn.Module):
                 merge_box = self.mergenet(encode_boxes)  # (1, d)
                 output_boxes = self.boxcoder.decode_torch(merge_box)
             else:
-                merge_box = self.mergenet(input_collect)    # (g, k, d) -> (g, d)
+                merge_box = self.mergenet(input_collect, conf=score_collect)    # (g, k, d) -> (g, d)
                 output_boxes = merge_box
 
             #  Avoid setting the box size < 0
@@ -268,7 +400,7 @@ class Ensemble(nn.Module):
             存在类别不均衡的问题，导致训练损失不稳定; 假设当前批次有100个样本,每个类别的数量比例存在严重不均衡
 
         """
-        pred_infos = self.non_max_suppression(ensemble_pred_dict)
+        pred_infos = self.learnable_nms(ensemble_pred_dict)
         batch_size = len(pred_infos)
         reg_batch_loss = 0
         for i in range(batch_size):
@@ -318,14 +450,21 @@ class Ensemble(nn.Module):
         return reg_loss
 
 
-    def post_process(self, ensemble_pred_dict, ret_dict_list):
+    def post_process(self, ensemble_pred_dict, ret_dict_list, nms_3d=False):
         # 1) 对多模型的recall进行平均处理
         ret_dict = self.statistic_recall_info(ret_dict_list)
 
         # 2) 对多模型的预测结果使用nms来进行评估(2d / 3d)
-        pred_infos = self.non_max_suppression(ensemble_pred_dict)
+        if self.cfg['LEARNAVBLE_EVAL']:
+            # use learnable nms
+            pred_infos = self.learnable_nms(ensemble_pred_dict)
+        else:
+            # use merge nms 3d or nms 2d
+            pred_infos = self.merge_nms_3d(ensemble_pred_dict) \
+                if self.cfg['NMS_3d'] else self.merge_nms_2d(ensemble_pred_dict)
         pred_dicts = self.collect_pred_data(pred_infos)
         return pred_dicts, ret_dict
+
 
     def collect_pred_data(self, pred_infos):
         pred_dicts = []
